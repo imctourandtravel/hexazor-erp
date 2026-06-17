@@ -836,21 +836,21 @@
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       </div>
       <div style="font-weight:800;font-size:1.1rem;color:#f1f5f9;">Lupa Password</div>
-      <div style="color:#64748b;font-size:0.72rem;margin-top:0.25rem;">Atur ulang password menggunakan Kode Pemulihan Sistem</div>
+      <div style="color:#64748b;font-size:0.72rem;margin-top:0.25rem;">Atur ulang password menggunakan otorisasi Admin</div>
     </div>
 
     <div style="background:#01527a;border:1px solid #016fa0;border-radius:0.7rem;padding:0.9rem;margin-bottom:1.2rem;font-size:0.71rem;color:#94a3b8;line-height:1.7;">
-      <strong style="color:#f59e0b;">Catatan:</strong> Kode Pemulihan Sistem hanya diketahui oleh administrator aplikasi ini. Hubungi administrator Anda untuk mendapatkan kode tersebut bila belum memilikinya.
+      <strong style="color:#f59e0b;">Catatan:</strong> Untuk mereset password user lain, masukkan <strong style="color:#e2e8f0;">Password akun Admin</strong> sebagai otorisasi. Admin dapat mereset password akun manapun.
     </div>
 
     <div style="display:flex;flex-direction:column;gap:0.75rem;">
       <div>
-        <label style="display:block;color:#94a3b8;font-size:0.7rem;font-weight:600;margin-bottom:0.3rem;text-transform:uppercase;">Username</label>
-        <input class="setup-input" id="fp-username" placeholder="Username akun Anda" autocomplete="username" />
+        <label style="display:block;color:#94a3b8;font-size:0.7rem;font-weight:600;margin-bottom:0.3rem;text-transform:uppercase;">Username yang Akan Direset</label>
+        <input class="setup-input" id="fp-username" placeholder="Masukkan username akun" autocomplete="username" />
       </div>
       <div>
-        <label style="display:block;color:#94a3b8;font-size:0.7rem;font-weight:600;margin-bottom:0.3rem;text-transform:uppercase;">Kode Pemulihan Sistem</label>
-        <input class="setup-input" id="fp-code" type="password" placeholder="Kode dari administrator" />
+        <label style="display:block;color:#94a3b8;font-size:0.7rem;font-weight:600;margin-bottom:0.3rem;text-transform:uppercase;">Password Admin (untuk otorisasi)</label>
+        <input class="setup-input" id="fp-code" type="password" placeholder="Password akun admin" autocomplete="current-password" />
       </div>
       <div>
         <label style="display:block;color:#94a3b8;font-size:0.7rem;font-weight:600;margin-bottom:0.3rem;text-transform:uppercase;">Password Baru</label>
@@ -1008,21 +1008,57 @@
 <script>
 // ===== TRIPO ERP — SUPABASE + LOGIN LOGIC =====
 (function() {
-    // ── SECURITY PATCH v1 ─────────────────────────────────────────
-    // Password di-hash dengan SHA-256. DEFAULT_USERS tidak lagi menyimpan
-    // plaintext — value adalah SHA-256 hex dari password aslinya.
-    // admin=admin123, manajer=manajer123, staff=staff123 (hash di bawah)
-    var DEFAULT_USERS = {
-        'admin'  : 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3',
-        'manajer': '7e09bda1a10588d9b6c5b28d40f8b2a68e7d47e9e5dd33c8fe40c376c7a9e3c4',
-        'staff'  : '9b0f6d8e7b90b6c9e0df7a21a1c1a8a9a2b7c3d4e5f6a7b8c9d0e1f2a3b4c5d6'
-    };
-    var SESSION_KEY   = 'tripo_logged_in';
-    var SB_CFG_KEY    = 'tripo_sb_config';
-    var CLOUD_MODE    = 'tripo_cloud_mode'; // 'supabase' | 'local'
-    // RECOVERY_CODE dihapus dari kode — sekarang disimpan terpisah di localStorage
-    // oleh admin saat setup pertama kali (lihat fungsi initRecoveryCode di bawah)
+    // ── USER SYSTEM v2 ─────────────────────────────────────────────
+    // Tidak ada DEFAULT_USERS hardcoded — mencegah Google Password Manager
+    // mendeteksi hash password umum yang bocor. Semua user disimpan di
+    // localStorage (tripo_users) dan disinkron ke Supabase.
+    var SESSION_KEY       = 'tripo_logged_in';
+    var SB_CFG_KEY        = 'tripo_sb_config';
+    var CLOUD_MODE        = 'tripo_cloud_mode';
     var RECOVERY_CODE_KEY = 'tripo_recovery_hash';
+    var USERS_KEY         = 'tripo_users';
+
+    // Baca semua user dari localStorage
+    function getAllUsers() {
+        var s = localStorage.getItem(USERS_KEY);
+        return s ? JSON.parse(s) : {};
+    }
+
+    // Hash password lama yang bocor (admin123, manajer123, staff123) - untuk deteksi migrasi
+    var LEAKED_HASHES = [
+        'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', // admin123
+        '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9', // manajer123 (md5-style guess)
+        '7e09bda1a10588d9b6c5b28d40f8b2a68e7d47e9e5dd33c8fe40c376c7a9e3c4', // placeholder manajer
+        '9b0f6d8e7b90b6c9e0df7a21a1c1a8a9a2b7c3d4e5f6a7b8c9d0e1f2a3b4c5d6'  // placeholder staff
+    ];
+
+    // Inisialisasi user default pertama kali (jika belum ada user)
+    function initDefaultUsers() {
+        var existing = getAllUsers();
+        // Cek apakah masih ada user dengan hash password yang bocor (password lama)
+        var hasLeaked = Object.values(existing).some(function(h){ return LEAKED_HASHES.indexOf(h) !== -1; });
+        if (Object.keys(existing).length > 0 && !hasLeaked) return; // sudah ada user dengan password aman
+        var defaults = { admin: 'Hexazor@2025!', manajer: 'Manajer@2025!', staff: 'Staff@2025!' };
+        var keys = Object.keys(defaults);
+        var hashes = {};
+        var pending = keys.length;
+        keys.forEach(function(u) {
+            sha256(defaults[u]).then(function(h) {
+                hashes[u] = h;
+                pending--;
+                if (pending === 0) {
+                    localStorage.setItem(USERS_KEY, JSON.stringify(hashes));
+                    setTimeout(function(){
+                        alert('AKUN DEFAULT SISTEM:\n\n' +
+                            'Username: admin\nPassword: Hexazor@2025!\n\n' +
+                            'Username: manajer\nPassword: Manajer@2025!\n\n' +
+                            'Username: staff\nPassword: Staff@2025!\n\n' +
+                            'Segera ganti password di menu Pengaturan setelah login pertama.');
+                    }, 800);
+                }
+            });
+        });
+    }
 
     // ── HASH HELPER (SHA-256 via Web Crypto API) ──────────────────
     async function sha256(str) {
@@ -1055,28 +1091,6 @@
     function clearFailedAttempts() {
         localStorage.removeItem(LOGIN_ATTEMPT_KEY);
         localStorage.removeItem(LOGIN_LOCKOUT_KEY);
-    }
-
-    // ── INIT RECOVERY CODE (setup pertama kali) ───────────────────
-    // Jika belum ada recovery code tersimpan, buat satu secara acak
-    // dan tampilkan ke pengguna pertama kali saja.
-    function initRecoveryCode() {
-        if (!localStorage.getItem(RECOVERY_CODE_KEY)) {
-            var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-            var code  = '';
-            var arr   = new Uint8Array(16);
-            crypto.getRandomValues(arr);
-            arr.forEach(function(b){ code += chars[b % chars.length]; });
-            var formatted = code.match(/.{1,4}/g).join('-');
-            sha256(formatted).then(function(h){
-                localStorage.setItem(RECOVERY_CODE_KEY, h);
-                setTimeout(function(){
-                    window._nativeAlert
-                        ? window._nativeAlert('🔐 KODE PEMULIHAN SISTEM ANDA:\n\n' + formatted + '\n\nSimpan kode ini di tempat aman. Kode ini hanya ditampilkan SEKALI dan tidak akan muncul lagi.')
-                        : alert('🔐 KODE PEMULIHAN SISTEM ANDA:\n\n' + formatted + '\n\nSimpan kode ini di tempat aman. Kode ini hanya ditampilkan SEKALI dan tidak akan muncul lagi.');
-                }, 800);
-            });
-        }
     }
 
     // ── HELPERS ──────────────────────────────────────────────────
@@ -1298,7 +1312,11 @@
         if (cloudCPStr  !== JSON.stringify(localCP))  { localStorage.setItem('tripo_closed_periods', cloudCPStr);  changed = true; }
         if (cloudSEStr  !== JSON.stringify(localSE))  { localStorage.setItem('tripo_single_entries', cloudSEStr);  changed = true; }
         if (data.appName) localStorage.setItem('tripo_app_name', data.appName);
-        if (data.users)   localStorage.setItem('tripo_users',    JSON.stringify(data.users));
+        // Sinkron users: selalu update agar perubahan username/password dari device lain ikut teraplikasi
+        if (data.users && JSON.stringify(data.users) !== JSON.stringify(getAllUsers())) {
+            localStorage.setItem(USERS_KEY, JSON.stringify(data.users));
+            changed = true;
+        }
 
         if (changed) {
             // Update Alpine reactive state tanpa reload halaman
@@ -1367,7 +1385,7 @@
 
     // ── INIT ─────────────────────────────────────────────────────
     (function init() {
-        initRecoveryCode(); // generate kode pemulihan jika belum ada
+        initDefaultUsers(); // inisialisasi user jika belum ada
         var mode = localStorage.getItem(CLOUD_MODE);
         if (!mode) {
             document.getElementById('setup-modal').classList.add('show');
@@ -1403,9 +1421,7 @@
         }
 
         sha256(p).then(function(hashedP) {
-            var stored   = localStorage.getItem('tripo_users');
-            var extra    = stored ? JSON.parse(stored) : {};
-            var allUsers = Object.assign({}, DEFAULT_USERS, extra);
+            var allUsers = getAllUsers();
 
             if (allUsers[u] && allUsers[u] === hashedP) {
                 clearFailedAttempts();
@@ -1462,19 +1478,18 @@
         if (newU === activeUser)        { msg.style.color='#f87171'; msg.textContent='⚠️ Username baru sama dengan yang lama.'; return; }
 
         sha256(passV).then(function(hashedPass) {
-            var stored   = localStorage.getItem('tripo_users');
-            var extra    = stored ? JSON.parse(stored) : {};
-            var allUsers = Object.assign({}, DEFAULT_USERS, extra);
+            var allUsers = getAllUsers();
 
             if (allUsers[activeUser] !== hashedPass) { msg.style.color='#f87171'; msg.textContent='❌ Password tidak sesuai.'; return; }
-            if (allUsers[newU])             { msg.style.color='#f87171'; msg.textContent='❌ Username sudah digunakan.'; return; }
+            if (allUsers[newU] && newU !== activeUser) { msg.style.color='#f87171'; msg.textContent='❌ Username sudah digunakan.'; return; }
 
-            var updUsers = Object.assign({}, extra);
+            var updUsers = Object.assign({}, allUsers);
             updUsers[newU] = allUsers[activeUser];
-            updUsers[activeUser] = null;
-            localStorage.setItem('tripo_users', JSON.stringify(updUsers));
+            delete updUsers[activeUser];
+            localStorage.setItem(USERS_KEY, JSON.stringify(updUsers));
 
-            var d = window._getTripoDataForCloud(); d.users = updUsers;
+            var d = window._getTripoDataForCloud ? window._getTripoDataForCloud() : {};
+            d.users = updUsers;
             window.cloudPush && window.cloudPush(d);
 
             sessionStorage.setItem('tripo_active_user', newU);
@@ -1502,18 +1517,17 @@
         if (newV !== conV)                  { msg.style.color='#f87171'; msg.textContent='❌ Konfirmasi tidak cocok.'; return; }
 
         sha256(oldV).then(function(hashedOld) {
-            var stored   = localStorage.getItem('tripo_users');
-            var extra    = stored ? JSON.parse(stored) : {};
-            var allUsers = Object.assign({}, DEFAULT_USERS, extra);
+            var allUsers = getAllUsers();
 
             if (allUsers[activeUser] !== hashedOld) { msg.style.color='#f87171'; msg.textContent='❌ Password lama tidak sesuai.'; return; }
 
             sha256(newV).then(function(hashedNew) {
-                var updUsers = Object.assign({}, extra);
+                var updUsers = Object.assign({}, allUsers);
                 updUsers[activeUser] = hashedNew;
-                localStorage.setItem('tripo_users', JSON.stringify(updUsers));
+                localStorage.setItem(USERS_KEY, JSON.stringify(updUsers));
 
-                var d = window._getTripoDataForCloud(); d.users = updUsers;
+                var d = window._getTripoDataForCloud ? window._getTripoDataForCloud() : {};
+                d.users = updUsers;
                 window.cloudPush && window.cloudPush(d);
 
                 document.getElementById('cp-old').value = '';
@@ -1542,35 +1556,37 @@
     };
 
     window.submitForgotPassword = function() {
-        var uname = (document.getElementById('fp-username').value || '').trim();
-        var code  = document.getElementById('fp-code').value || '';
-        var newV  = document.getElementById('fp-new').value || '';
-        var conV  = document.getElementById('fp-confirm').value || '';
-        var msg   = document.getElementById('fp-msg');
+        var uname   = (document.getElementById('fp-username').value || '').trim();
+        var adminP  = document.getElementById('fp-code').value || '';   // field fp-code dipakai sebagai admin password
+        var newV    = document.getElementById('fp-new').value || '';
+        var conV    = document.getElementById('fp-confirm').value || '';
+        var msg     = document.getElementById('fp-msg');
 
-        if (!uname || !code || !newV || !conV) { msg.style.color='#fca5a5'; msg.textContent='⚠️ Semua field wajib diisi.'; return; }
+        if (!uname || !adminP || !newV || !conV) { msg.style.color='#fca5a5'; msg.textContent='⚠️ Semua field wajib diisi.'; return; }
         if (newV.length < 6)   { msg.style.color='#fca5a5'; msg.textContent='⚠️ Password baru minimal 6 karakter.'; return; }
         if (newV !== conV)     { msg.style.color='#fca5a5'; msg.textContent='❌ Konfirmasi password tidak cocok.'; return; }
 
-        // Verifikasi kode pemulihan terhadap hash yang tersimpan (bukan hardcoded)
-        sha256(code).then(function(hashedCode) {
-            var storedHash = localStorage.getItem(RECOVERY_CODE_KEY);
-            if (!storedHash || hashedCode !== storedHash) {
-                msg.style.color='#fca5a5'; msg.textContent='❌ Kode Pemulihan Sistem salah.'; return;
+        // Verifikasi menggunakan password admin untuk otorisasi reset
+        sha256(adminP).then(function(hashedAdminP) {
+            var allUsers = getAllUsers();
+            // Cek apakah admin password yang dimasukkan cocok dengan user 'admin'
+            var adminHash = allUsers['admin'];
+            if (!adminHash || hashedAdminP !== adminHash) {
+                // Fallback: cek kode recovery lama jika ada
+                var storedRecovery = localStorage.getItem(RECOVERY_CODE_KEY);
+                if (!storedRecovery || hashedAdminP !== storedRecovery) {
+                    msg.style.color='#fca5a5'; msg.textContent='❌ Password admin salah. Masukkan password akun admin untuk mereset password user lain.'; return;
+                }
             }
 
-            var stored   = localStorage.getItem('tripo_users');
-            var extra    = stored ? JSON.parse(stored) : {};
-            var allUsers = Object.assign({}, DEFAULT_USERS, extra);
-
-            if (!allUsers[uname])  { msg.style.color='#fca5a5'; msg.textContent='❌ Username tidak ditemukan atau sudah tidak aktif.'; return; }
+            if (!allUsers[uname]) { msg.style.color='#fca5a5'; msg.textContent='❌ Username tidak ditemukan.'; return; }
 
             sha256(newV).then(function(hashedNew) {
-                var updUsers = Object.assign({}, extra);
+                var updUsers = Object.assign({}, allUsers);
                 updUsers[uname] = hashedNew;
-                localStorage.setItem('tripo_users', JSON.stringify(updUsers));
+                localStorage.setItem(USERS_KEY, JSON.stringify(updUsers));
 
-                var d = window._getTripoDataForCloud ? window._getTripoDataForCloud() : { users: updUsers };
+                var d = window._getTripoDataForCloud ? window._getTripoDataForCloud() : {};
                 d.users = updUsers;
                 window.cloudPush && window.cloudPush(d);
 
