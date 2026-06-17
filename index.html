@@ -1331,7 +1331,7 @@
             .catch(function(){});
     };
 
-    // ── POLLING OTOMATIS SETIAP 15 DETIK ─────────────────────────
+    // ── POLLING OTOMATIS SETIAP 8 DETIK ──────────────────────────
     var _pollInterval = null;
     function startRealtimePolling() {
         if (_pollInterval) clearInterval(_pollInterval);
@@ -1339,7 +1339,7 @@
             if (localStorage.getItem(CLOUD_MODE) === 'supabase') {
                 window.cloudPullAndApply(true); // silent = tidak tampil toast tiap poll
             }
-        }, 15000); // 15 detik
+        }, 8000); // 8 detik (lebih responsif antar device)
     }
 
     // ── SYNC SAAT TAB DIFOKUSKAN KEMBALI ─────────────────────────
@@ -1352,13 +1352,15 @@
     // ── SYNC ANTAR TAB BROWSER (localStorage event) ───────────────
     window.addEventListener('storage', function(e) {
         if (e.key === 'tripo_transactions' || e.key === 'tripo_custom_coa' ||
-            e.key === 'tripo_fixed_assets' || e.key === 'tripo_closed_periods') {
+            e.key === 'tripo_fixed_assets' || e.key === 'tripo_closed_periods' ||
+            e.key === 'tripo_single_entries') {
             var alpine = getAlpineData();
             if (!alpine) return;
             if (e.key === 'tripo_transactions'  && e.newValue) alpine.transactions  = JSON.parse(e.newValue);
             if (e.key === 'tripo_custom_coa'    && e.newValue) alpine.coa           = JSON.parse(e.newValue);
             if (e.key === 'tripo_fixed_assets'  && e.newValue) alpine.fixedAssets   = JSON.parse(e.newValue);
             if (e.key === 'tripo_closed_periods'&& e.newValue) alpine.closedPeriods = JSON.parse(e.newValue);
+            if (e.key === 'tripo_single_entries'&& e.newValue) alpine.singleEntries = JSON.parse(e.newValue);
             showToast('🔄 Sinkron dari tab lain', 1800);
         }
     });
@@ -3809,6 +3811,8 @@
 
             saveToStorage() {
                 localStorage.setItem('tripo_transactions', JSON.stringify(this.transactions));
+                // Pastikan singleEntries juga tersimpan sinkron sebelum push
+                localStorage.setItem('tripo_single_entries', JSON.stringify(this.singleEntries));
                 // Rebuild helper & push ke Supabase
                 var self = this;
                 window._getTripoDataForCloud = function() {
@@ -4284,8 +4288,6 @@
                     _seRef    : true
                 });
 
-                this.saveToStorage();
-
                 // Simpan referensi single entry (untuk tampilan tabel & hapus)
                 let entry = {
                     id         : vId,
@@ -4298,8 +4300,8 @@
                     lawanAkun  : lawanAkun
                 };
                 this.singleEntries.push(entry);
-                localStorage.setItem('tripo_single_entries', JSON.stringify(this.singleEntries));
-                window._getTripoDataForCloud && window.cloudPush && window.cloudPush(window._getTripoDataForCloud());
+                // saveToStorage menyimpan transactions + singleEntries + push ke cloud (1x saja)
+                this.saveToStorage();
 
                 this.seDescription = '';
                 this.seAmount = 0;
@@ -4311,11 +4313,10 @@
                 if (confirm('Hapus catatan ini? Jurnal terkait di Buku Besar juga akan dihapus.')) {
                     // Hapus dari this.transactions berdasarkan voucherId
                     this.transactions = this.transactions.filter(t => t.voucherId !== id);
-                    this.saveToStorage();
-                    // Hapus dari daftar referensi single entry
+                    // Hapus dari daftar referensi single entry SEBELUM saveToStorage
                     this.singleEntries = this.singleEntries.filter(e => e.id !== id);
-                    localStorage.setItem('tripo_single_entries', JSON.stringify(this.singleEntries));
-                    window._getTripoDataForCloud && window.cloudPush && window.cloudPush(window._getTripoDataForCloud());
+                    // saveToStorage sudah menyimpan singleEntries + push ke cloud (1x saja)
+                    this.saveToStorage();
                 }
             },
 
@@ -4393,9 +4394,7 @@
                     _seRef    : true
                 });
 
-                this.saveToStorage();
-
-                // Update referensi entry single entry
+                // Update referensi entry single entry SEBELUM saveToStorage
                 let idx = this.singleEntries.findIndex(e => e.id === this.seEditId);
                 if (idx !== -1) {
                     this.singleEntries[idx] = {
@@ -4409,8 +4408,8 @@
                         lawanAkun  : lawanAkun
                     };
                 }
-                localStorage.setItem('tripo_single_entries', JSON.stringify(this.singleEntries));
-                window._getTripoDataForCloud && window.cloudPush && window.cloudPush(window._getTripoDataForCloud());
+                // saveToStorage menyimpan transactions + singleEntries + push ke cloud (1x saja)
+                this.saveToStorage();
 
                 this.seEditModalOpen = false;
                 alert(`✅ Catatan ${this.seEditId} berhasil diperbarui! Jurnal Buku Besar, Neraca, dan Laba Rugi telah diperbarui.`);
